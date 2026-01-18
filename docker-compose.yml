@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: db-web-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: webdb
+      LANG: ja_JP.utf8
+      # 内部接続(dblink)を容易にするため、認証をスルーさせる設定
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - ./sql/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./sql/02_gateway.sql:/docker-entrypoint-initdb.d/02_gateway.sql
+      - ./docker/initdb/02_assets.sql:/docker-entrypoint-initdb.d/99_assets.sql
+    ports:
+      - "5432:5432"
+    # ⚠️ 以前の command: ... の行は削除する
+
+  server:
+    image: postgrest/postgrest:v12.0.2
+    container_name: db-web-server
+    ports:
+      - "80:3000"
+    environment:
+      # trustモードなのでパスワードは何でも通るが、形式上指定しておく
+      PGRST_DB_URI: "postgres://web_authenticator:very_secure_password@db:5432/webdb"
+      PGRST_DB_SCHEMA: "public"
+      PGRST_DB_ANON_ROLE: "web_authenticator"
+      PGRST_DB_ROOT_SPEC: "serve_raw"
+      PGRST_RAW_MEDIA_TYPES: "text/html,text/css,application/javascript,application/json,image/png,image/jpeg,image/gif,image/svg+xml,font/woff,font/woff2"
+    depends_on:
+      - db
