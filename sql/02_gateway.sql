@@ -23,6 +23,7 @@ GRANT INSERT ON access_logs TO web_authenticator;
 GRANT INSERT ON comments TO web_authenticator;
 
 GRANT EXECUTE ON FUNCTION resolve_route TO web_authenticator;
+GRANT EXECUTE ON FUNCTION html_escape TO web_authenticator;
 
 -- ================================================================
 -- 2. MEDIA TYPE HANDLER DEFINITION (v12 Fix)

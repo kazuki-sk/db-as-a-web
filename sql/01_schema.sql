@@ -95,6 +95,17 @@ CREATE TABLE access_logs (
 -- 2. TRIGGERS & UTILITIES
 -- ================================================================
 
+-- HTML エスケープ (XSS対策)
+CREATE OR REPLACE FUNCTION html_escape(input text) RETURNS text AS $$
+    SELECT replace(replace(replace(replace(replace(
+        input,
+        '&', '&amp;'),
+        '<', '&lt;'),
+        '>', '&gt;'),
+        '"', '&quot;'),
+        '''', '&#x27;');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
 -- ETag自動更新
 CREATE OR REPLACE FUNCTION generate_asset_etag() RETURNS TRIGGER AS $$
 BEGIN
@@ -179,15 +190,23 @@ BEGIN
 
     -- 2. POST処理 (コメント)
     IF NOT v_handled AND req_method = 'POST' AND req_path = '/api/comments' THEN
-        INSERT INTO comments (post_slug, author, body)
-        VALUES (req_payload->>'slug', req_payload->>'author', req_payload->>'body');
-        
-        v_status := 303;
-        v_redirect_url := '/blog/' || (req_payload->>'slug');
-        v_content := NULL;
-        v_content_type := 'text/plain';
-        v_sec_headers := v_sec_headers || jsonb_build_object('Location', v_redirect_url);
-        v_handled := true;
+        -- スラグがパス区切り文字や外部URLを含まないことを確認 (オープンリダイレクト対策)
+        IF (req_payload->>'slug') !~ '^[a-zA-Z0-9_-]+$' THEN
+            v_status := 400;
+            v_content := 'Bad Request'::bytea;
+            v_content_type := 'text/plain';
+            v_handled := true;
+        ELSE
+            INSERT INTO comments (post_slug, author, body)
+            VALUES (req_payload->>'slug', req_payload->>'author', req_payload->>'body');
+            
+            v_status := 303;
+            v_redirect_url := '/blog/' || (req_payload->>'slug');
+            v_content := NULL;
+            v_content_type := 'text/plain';
+            v_sec_headers := v_sec_headers || jsonb_build_object('Location', v_redirect_url);
+            v_handled := true;
+        END IF;
     END IF;
 
     -- 3. コンテンツ解決
@@ -215,10 +234,10 @@ BEGIN
 
         -- B. Search (SSR)
         ELSIF req_path = '/search' THEN
-            SELECT string_agg(format('<li><a href="/blog/%s">%s</a></li>', slug, title), '')
+            SELECT string_agg(format('<li><a href="/blog/%s">%s</a></li>', slug, html_escape(title)), '')
             INTO v_search_res
             FROM posts
-            WHERE fts_doc @@ to_tsquery('simple', COALESCE(req_params->>'q', ''));
+            WHERE fts_doc @@ websearch_to_tsquery('simple', COALESCE(req_params->>'q', ''));
             
             SELECT replace(convert_from(content, 'UTF8'), '{{results}}', COALESCE(v_search_res, 'No results'))::bytea
             INTO v_content
@@ -245,7 +264,7 @@ BEGIN
                     INTO v_content, v_content_type
                     FROM posts WHERE slug = v_post_slug;
                 ELSE 
-                    SELECT replace(replace(convert_from(a.content, 'UTF8'), '{{title}}', p.title), '{{content}}', p.content)::bytea, 'text/html'
+                    SELECT replace(replace(convert_from(a.content, 'UTF8'), '{{title}}', html_escape(p.title)), '{{content}}', html_escape(p.content))::bytea, 'text/html'
                     INTO v_content, v_content_type
                     FROM web_assets a, posts p 
                     WHERE a.path = '/blog/[slug].html' AND p.slug = v_post_slug;
@@ -284,7 +303,9 @@ $$ LANGUAGE plpgsql;
 -- Headers
 INSERT INTO security_configs VALUES 
 ('X-Frame-Options', 'DENY'),
-('X-Content-Type-Options', 'nosniff');
+('X-Content-Type-Options', 'nosniff'),
+('Content-Security-Policy', 'default-src ''self''; script-src ''none''; object-src ''none'''),
+('Referrer-Policy', 'no-referrer');
 
 -- Users
 INSERT INTO users (username, role) VALUES ('admin', 'admin');
